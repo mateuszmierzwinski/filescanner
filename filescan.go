@@ -1,6 +1,7 @@
 package filescanner
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,15 +47,41 @@ func (f *Scanner) Search(searchPath string, fileNameSubstr string, wg *sync.Wait
 	// add buffered stream so it can fill channels before pulling (no deadlock)
 	f.fileStream, f.errStream = make(chan *FileEntry, 10), make(chan *ProcessingError, 10)
 
-	go f.run(wg, searchPath, fileNameSubstr)
+	go f.run(wg, searchPath, fileNameSubstr, false)
 
 	return f.fileStream, f.errStream
 }
 
 /*
+SearchNB starts file scanning (in separate thread)
+
+Inputs are searchPath describing path on the disk to be searched, fileNameSubstr that is a part of name searched (for example .extension) and fileEntryStream that is channel of FileEntry pointers
+*/
+func (f *Scanner) SearchNB(searchPath string, fileNameSubstr string, fileEntryStream chan *FileEntry) chan *ProcessingError {
+
+	// add buffered stream so it can fill channels before pulling (no deadlock)
+	f.errStream = make(chan *ProcessingError, 10)
+
+	if fileEntryStream == nil {
+		f.errStream <- &ProcessingError{
+			Path: searchPath,
+			Err:  fmt.Errorf("fileEntryStream is nil - no receiver defined for SearchNB() method"),
+		}
+		return f.errStream
+	}
+
+	// handling is up to user
+	f.fileStream = fileEntryStream
+
+	go f.run(nil, searchPath, fileNameSubstr, true)
+
+	return f.errStream
+}
+
+/*
 run function is internal runner method that works as separate goroutine
 */
-func (f *Scanner) run(wg *sync.WaitGroup, path string, substr string) {
+func (f *Scanner) run(wg *sync.WaitGroup, path string, substr string, closeOnFinish bool) {
 	defer func() {
 		if wg != nil {
 			wg.Done()
@@ -63,6 +90,10 @@ func (f *Scanner) run(wg *sync.WaitGroup, path string, substr string) {
 
 	// start processing
 	scanEntriesStream(path, strings.ToLower(substr), f.fileStream, f.errStream)
+
+	if closeOnFinish {
+		close(f.fileStream)
+	}
 
 	return
 }
